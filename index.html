@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="ad.orientation" content="portrait,landscape">
+    <meta name="ad.size" content="width=300,height=250">
+    <title>3D Playable Ad</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            height: 100vh;
+            width: 100vw;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background-color: #000;
+        }
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        #popup {
+            display: none;
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 80%;
+            max-width: 400px;
+            background-color: rgba(0, 0, 0, 0.8);
+            color: #fff;
+            border-radius: 10px;
+            text-align: center;
+            padding: 20px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+        }
+        #popup img {
+            width: 100%;
+            border-radius: 10px;
+        }
+        .bottom-right-button {
+            display: inline-block;
+            margin-top: 20px;
+            padding: 10px 20px;
+            background-color: #28a745;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            font-size: 18px;
+        }
+    </style>
+</head>
+<body>
+<div id="popup">
+    <img id="popup-image" src="" alt="Popup Image">
+    <a href="https://apps.apple.com/us/app/farm-connect-match-3d-puzzle/id6503044105" class="bottom-right-button">Install Now</a>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/nipplejs/0.10.2/nipplejs.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+<script type="module">
+    import { CubeManager } from './js/CubeStackManager.js';
+    import { ScenePropManager } from './js/ScenePropManager.js';
+    import { ScoreManager } from './js/ScoreManager.js';
+
+    let scene, camera, renderer, mixer, character, idleMixer;
+    let isIdle = true;
+    let characterSpeed = 0.12;
+    let joystickDeltaX = 0, joystickDeltaY = 0;
+    let cumulativeRotation = 0;
+    let cubeManager, scenePropManager, scoreManager;
+
+    function init() {
+        scene = new THREE.Scene();
+        camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        document.body.appendChild(renderer.domElement);
+
+        scenePropManager = new ScenePropManager(scene);
+        scoreManager = new ScoreManager(scenePropManager);
+
+        loadAssets();
+        setupLighting();
+        setupJoystick();
+        scenePropManager.createCubesInGrid(15, 15, 0, 0, 2);
+        scenePropManager.createDropZone();
+        scenePropManager.loadHouseModel();
+        scoreManager.createUI();
+        animate();
+    }
+
+    function loadAssets() {
+        loadSkybox('https://storage.googleapis.com/handler-reflections/dayclear.jpeg');
+        loadPlane('https://storage.googleapis.com/handler-reflections/plane.png');
+
+        new THREE.GLTFLoader().load('https://storage.googleapis.com/handler-reflections/model%20(1).glb', gltf => {
+            character = gltf.scene;
+            character.scale.set(2, 2, 2);
+            character.position.set(0, 0.5, 0);
+            scene.add(character);
+            mixer = new THREE.AnimationMixer(character);
+            gltf.animations.forEach(clip => mixer.clipAction(clip).play());
+
+            new THREE.GLTFLoader().load('https://storage.googleapis.com/handler-reflections/idle.glb', idleGltf => {
+                idleMixer = new THREE.AnimationMixer(character);
+                const idleAction = idleMixer.clipAction(idleGltf.animations[0]);
+                idleAction.play();
+                idleAction.paused = true;
+            });
+
+            cubeManager = new CubeManager(scene, character, scoreManager); // ScoreManager'ı buraya ekledik
+        });
+    }
+
+    function loadSkybox(url) {
+        new THREE.TextureLoader().load(url, texture => {
+            const rt = new THREE.WebGLCubeRenderTarget(texture.image.height);
+            rt.fromEquirectangularTexture(renderer, texture);
+            scene.background = rt.texture;
+        });
+    }
+
+    function loadPlane(url) {
+        const plane = new THREE.Mesh(
+            new THREE.PlaneGeometry(100, 100),
+            new THREE.MeshBasicMaterial({ map: new THREE.TextureLoader().load(url) })
+        );
+        plane.rotation.x = -Math.PI / 2;
+        scene.add(plane);
+    }
+
+    function setupLighting() {
+        const directionalLight = new THREE.DirectionalLight(0xffffff, 1);
+        directionalLight.position.set(0, 50, 0);
+        directionalLight.target.position.set(0, 0, 0);
+        scene.add(directionalLight);
+
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.3);
+        scene.add(ambientLight);
+    }
+
+    function setupJoystick() {
+        const joystick = nipplejs.create({
+            zone: document.body,
+            mode: 'dynamic',
+            color: 'red'
+        });
+
+        joystick.on('move', (evt, data) => {
+            joystickDeltaX = data.vector.x;
+            joystickDeltaY = -data.vector.y;
+            isIdle = false;
+
+            let newRotation = Math.atan2(joystickDeltaX, joystickDeltaY);
+            let rotationDiff = newRotation - (character.rotation.y % (2 * Math.PI));
+
+            if (rotationDiff > Math.PI) rotationDiff -= 2 * Math.PI;
+            if (rotationDiff < -Math.PI) rotationDiff += 2 * Math.PI;
+
+            cumulativeRotation += rotationDiff;
+        });
+
+        joystick.on('end', () => {
+            joystickDeltaX = joystickDeltaY = 0;
+            isIdle = true;
+        });
+    }
+
+    function animate() {
+        requestAnimationFrame(animate);
+        if (character) {
+            const newX = character.position.x + joystickDeltaX * characterSpeed;
+            const newZ = character.position.z + joystickDeltaY * characterSpeed;
+
+            if (Math.abs(newX) <= 50 && Math.abs(newZ) <= 50) {
+                character.position.x = newX;
+                character.position.z = newZ;
+            }
+
+            cubeManager.updateVelocity();
+
+            if (joystickDeltaX !== 0 || joystickDeltaY !== 0) {
+                character.rotation.y = cumulativeRotation;
+                if (idleMixer) idleMixer.clipAction(idleMixer._actions[0]._clip).paused = true;
+            } else {
+                if (idleMixer) idleMixer.clipAction(idleMixer._actions[0]._clip).paused = false;
+            }
+
+            const inDropZone = scenePropManager.dropZone && cubeManager.checkCollision(character, scenePropManager.dropZone);
+            cubeManager.updateDropZoneStatus(inDropZone);
+
+            scene.children.filter(child => child.name === 'collectible' && cubeManager.checkCollision(character, child)).forEach(cube => cubeManager.collectCube(cube));
+            cubeManager.updateStackCubes(isIdle);
+        }
+
+        scenePropManager.updateCubesRotation();
+        scenePropManager.updateHouseScale(0.01); // Update house scale with a fixed deltaTime
+        updateCamera();
+        if (mixer) mixer.update(0.01);
+        if (idleMixer && isIdle) idleMixer.update(0.01);
+        renderer.render(scene, camera);
+    }
+
+    function updateCamera() {
+        if (character) {
+            const offset = new THREE.Vector3(0, 30, 35);
+            camera.position.lerp(character.position.clone().add(offset), 1);
+            camera.lookAt(character.position);
+        }
+    }
+
+    window.addEventListener('load', init);
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+</script>
+</body>
+</html>
